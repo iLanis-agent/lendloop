@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LendLoop - get your stuff back without the awkward</title>
+<style>
+  :root { --ink:#24231f; --muted:#7d7a70; --accent:#8a5a2b; --accent-dk:#6f4720; --card:#ffffff; --bg:#f7f5f1; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background:var(--bg); color:var(--ink); }
+  .wrap { max-width:680px; margin:0 auto; padding:24px 16px 64px; }
+  h1 { font-size:28px; margin:0 0 6px; }
+  .tag { color:var(--muted); margin:0 0 20px; line-height:1.45; }
+  .card { background:var(--card); border:1px solid #e8e3da; border-radius:14px; padding:18px; margin-bottom:14px; box-shadow:0 1px 3px rgba(0,0,0,.04); }
+  .row { display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end; }
+  label { display:block; font-size:12px; color:var(--muted); margin-bottom:4px; }
+  input, select { padding:9px 10px; border:1px solid #ddd5c8; border-radius:8px; font-size:15px; background:#fff; }
+  input[type=text] { width:180px; }
+  input[type=number] { width:90px; }
+  button { padding:10px 16px; border:0; border-radius:8px; background:var(--accent); color:#fff; font-size:15px; cursor:pointer; }
+  button:hover { background:var(--accent-dk); }
+  button.ghost { background:#f0ece4; color:var(--ink); }
+  button.ghost:hover { background:#e4ddcf; }
+  .stats { display:flex; gap:28px; justify-content:center; margin-bottom:14px; flex-wrap:wrap; }
+  .stat b { display:block; font-size:22px; text-align:center; }
+  .stat span { color:var(--muted); font-size:13px; }
+  .loan { padding:14px; border:1px solid #e8e3da; border-radius:10px; margin-bottom:10px; background:#fff; }
+  .loan .top { display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; }
+  .loan .item { font-weight:700; font-size:17px; }
+  .loan .meta { color:var(--muted); font-size:14px; margin-top:4px; }
+  .pill { display:inline-block; padding:3px 12px; border-radius:999px; font-size:12px; font-weight:700; }
+  .pill.on_track { background:#e4efe6; color:#2f6f45; }
+  .pill.due_soon { background:#f6ecd2; color:#8a6a14; }
+  .pill.overdue { background:#f6e0dd; color:#8f3a33; }
+  .nudgebox { margin-top:10px; padding:10px 12px; background:#faf8f3; border-radius:8px; font-size:14px; line-height:1.5; display:none; }
+  .nudgebox.show { display:block; }
+  .loan .btns { margin-top:10px; display:flex; gap:8px; flex-wrap:wrap; }
+  .loan .btns button { font-size:13px; padding:7px 12px; }
+  .empty { color:var(--muted); text-align:center; padding:24px 0; font-size:15px; }
+  .hidden { display:none; }
+  .copied { color:#2f6f45; font-size:13px; margin-left:6px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>LendLoop</h1>
+  <p class="tag">Your drill, your tent, your ladder - they are out there somewhere. LendLoop tracks what you lent, to whom, and when it is due back, and writes the reminder text so you do not have to.</p>
+
+  <div class="stats" id="stats" hidden>
+    <div class="stat"><b id="stOut">0</b><span>out there</span></div>
+    <div class="stat"><b id="stSoon">0</b><span>due soon</span></div>
+    <div class="stat"><b id="stOver">0</b><span>overdue</span></div>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <div><label for="item">What did you lend?</label><input type="text" id="item" placeholder="cordless drill"></div>
+      <div><label for="who">To whom?</label><input type="text" id="who" placeholder="Sam"></div>
+      <div><label for="days">Due back in (days)</label><input type="number" id="days" value="7" min="1" max="365"></div>
+      <button id="addBtn">Lend it</button>
+    </div>
+  </div>
+
+  <div id="list"></div>
+  <div class="empty" id="empty">Nothing out on loan. Lend something and it shows up here.</div>
+</div>
+<script src="engine.js"></script>
+<script>
+(function(){
+  var E = LendLoopEngine;
+  var KEY = 'lendloop.loans.v1';
+  var loans = [];
+  try { loans = JSON.parse(localStorage.getItem(KEY) || '[]'); } catch(e) { loans = []; }
+
+  function save(){ try { localStorage.setItem(KEY, JSON.stringify(loans)); } catch(e){} }
+  function $(id){ return document.getElementById(id); }
+  function esc(s){ var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+  function render(){
+    var now = Date.now();
+    var open = loans.filter(function(l){ return !l.returned; });
+    var view = open.map(function(l){ return {lentMs:l.lentMs, lendDays:l.lendDays, nowMs:now, ref:l}; }).sort(E.byUrgency);
+    var soon = 0, over = 0;
+    view.forEach(function(v){
+      var s = E.status(v.lentMs, v.lendDays, now).key;
+      if (s === 'due_soon') soon++;
+      if (s === 'overdue') over++;
+    });
+    $('stats').hidden = view.length === 0;
+    $('stOut').textContent = view.length;
+    $('stSoon').textContent = soon;
+    $('stOver').textContent = over;
+    $('empty').classList.toggle('hidden', view.length > 0);
+
+    var html = '';
+    view.forEach(function(v, i){
+      var l = v.ref;
+      var s = E.status(l.lentMs, l.lendDays, now);
+      var out = E.daysOut(l.lentMs, now);
+      var due = new Date(E.dueMs(l.lentMs, l.lendDays));
+      var dueStr = due.toLocaleDateString(undefined, {month:'short', day:'numeric'});
+      var leftTxt = s.left < 0 ? E.fmtDays(s.left) + ' overdue' : 'due ' + dueStr + ' (' + E.fmtDays(Math.max(0,s.left)) + ' left)';
+      html += '<div class="loan" data-i="' + loans.indexOf(l) + '">' +
+        '<div class="top"><span class="item">' + esc(l.item) + '</span><span class="pill ' + s.key + '">' + s.label + '</span></div>' +
+        '<div class="meta">with <b>' + esc(l.who) + '</b> - out ' + E.fmtDays(out) + ' - ' + leftTxt + '</div>' +
+        '<div class="btns">' +
+          '<button class="ghost" data-act="friendly">Friendly nudge</button>' +
+          '<button class="ghost" data-act="direct">Direct nudge</button>' +
+          '<button class="ghost" data-act="back">Got it back</button>' +
+        '</div>' +
+        '<div class="nudgebox" id="nb' + loans.indexOf(l) + '"></div>' +
+      '</div>';
+    });
+    $('list').innerHTML = html;
+  }
+
+  $('addBtn').addEventListener('click', function(){
+    var item = $('item').value.trim(), who = $('who').value.trim();
+    var days = parseInt($('days').value, 10);
+    if (!item || !who || !(days >= 1)) return;
+    loans.push({item:item, who:who, lentMs:Date.now(), lendDays:days, returned:false});
+    $('item').value = ''; $('who').value = '';
+    save(); render();
+  });
+
+  $('list').addEventListener('click', function(ev){
+    var btn = ev.target.closest('button'); if (!btn) return;
+    var box = ev.target.closest('.loan'); if (!box) return;
+    var i = parseInt(box.getAttribute('data-i'), 10);
+    var l = loans[i]; if (!l) return;
+    var act = btn.getAttribute('data-act');
+    if (act === 'back'){ l.returned = true; save(); render(); return; }
+    var now = Date.now();
+    var overdue = Math.max(0, -E.status(l.lentMs, l.lendDays, now).left);
+    var text = E.nudge(l.item, l.who, act, overdue);
+    var nb = $('nb' + i);
+    nb.textContent = text;
+    nb.classList.add('show');
+    if (navigator.clipboard){
+      navigator.clipboard.writeText(text);
+      var c = document.createElement('span'); c.className = 'copied'; c.textContent = 'copied';
+      btn.parentNode.appendChild(c);
+      setTimeout(function(){ c.remove(); }, 1500);
+    }
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>
